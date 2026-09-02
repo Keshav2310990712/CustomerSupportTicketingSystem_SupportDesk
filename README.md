@@ -1,4 +1,4 @@
-# 🛡 SupportDesk — Customer Support Ticketing System
+# 🛡 ResolveHub — Customer Support Ticketing System
 
 A full-stack MERN customer support platform where clients raise tickets and agents triage and resolve them.
 

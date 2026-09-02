@@ -26,7 +26,7 @@ export default function Layout({ children }) {
     '/client':     'My Tickets',
     '/client/new': 'New Ticket',
     '/agent':      'Agent Dashboard',
-  }[location.pathname] ?? 'SupportDesk';
+  }[location.pathname] ?? 'ResolveHub';
 
   return (
     <div className="app-layout">
@@ -35,7 +35,7 @@ export default function Layout({ children }) {
         <div className="sidebar-logo">
           <div className="sidebar-logo-icon">🛡</div>
           <div>
-            <div className="sidebar-logo-text">SupportDesk</div>
+            <div className="sidebar-logo-text">ResolveHub</div>
             <div className="sidebar-logo-sub">Support Platform</div>
           </div>
         </div>

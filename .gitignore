@@ -9,6 +9,7 @@ backend/.env
 # Build output
 frontend/dist/
 frontend/dist-ssr/
+frontend/.vite/
 
 # Uploads (user files)
 backend/uploads/*

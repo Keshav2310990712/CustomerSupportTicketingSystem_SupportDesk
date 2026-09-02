@@ -34,7 +34,7 @@ export default function LoginPage() {
       <div className="auth-left">
         <div className="auth-left-logo">
           <div className="auth-left-logo-icon">🛡</div>
-          SupportDesk
+          ResolveHub
         </div>
 
         <div>
@@ -60,7 +60,7 @@ export default function LoginPage() {
         </div>
 
         <div style={{ fontSize: '.78rem', color: '#6366f1' }}>
-          © 2026 SupportDesk · Built with MERN Stack
+          © 2026 ResolveHub · Built with MERN Stack
         </div>
       </div>
 
@@ -72,7 +72,7 @@ export default function LoginPage() {
           </div>
           <div className="auth-box-sub">
             {mode === 'login'
-              ? 'Sign in to your SupportDesk account'
+              ? 'Sign in to your ResolveHub account'
               : 'Get started — it only takes a minute'}
           </div>
 
