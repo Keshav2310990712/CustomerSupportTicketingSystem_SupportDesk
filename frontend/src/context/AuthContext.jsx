@@ -4,16 +4,30 @@ import API from '../api/api';
 const AuthContext = createContext(null);
 
 export function AuthProvider({ children }) {
-  const [user, setUser] = useState(null);
+  const [user, setUser]       = useState(null);
   const [loading, setLoading] = useState(true);
 
+  // On mount: verify stored token is still valid against the server
   useEffect(() => {
     const token = localStorage.getItem('token');
-    const saved = localStorage.getItem('user');
-    if (token && saved) {
-      setUser(JSON.parse(saved));
+    if (!token) {
+      setLoading(false);
+      return;
     }
-    setLoading(false);
+    // Ping /auth/me — if it fails the token is stale/invalid → force logout
+    API.get('/auth/me')
+      .then(({ data }) => {
+        // Refresh stored user with latest data from DB
+        localStorage.setItem('user', JSON.stringify(data));
+        setUser(data);
+      })
+      .catch(() => {
+        // Token invalid or user doesn't exist on this DB — clear everything
+        localStorage.removeItem('token');
+        localStorage.removeItem('user');
+        setUser(null);
+      })
+      .finally(() => setLoading(false));
   }, []);
 
   const login = async (email, password) => {
