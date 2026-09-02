@@ -1,26 +1,24 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import API from '../api/api';
-import { io } from 'socket.io-client';
 import Toast, { useToast } from '../components/Toast';
 
-const SOCKET_URL   = 'http://localhost:5000';
-const URGENCY_ORD  = { critical: 0, high: 1, medium: 2, low: 3 };
-const STATUS_DOTS  = { open: '#0284c7', 'in-progress': '#7c3aed', pending: '#d97706', resolved: '#059669', closed: '#9ca3af' };
+const POLL_INTERVAL = 8000; // refresh every 8 seconds
+const URGENCY_ORD   = { critical: 0, high: 1, medium: 2, low: 3 };
+const STATUS_DOTS   = { open: '#0284c7', 'in-progress': '#7c3aed', pending: '#d97706', resolved: '#059669', closed: '#9ca3af' };
 
 export default function AgentDashboard() {
-  const [tickets, setTickets]   = useState([]);
-  const [stats, setStats]       = useState(null);
-  const [total, setTotal]       = useState(0);
-  const [page, setPage]         = useState(1);
-  const [pages, setPages]       = useState(1);
-  const [view, setView]         = useState('assigned');
-  const [filters, setFilters]   = useState({ status: '', urgency: '', department: '' });
-  const [loading, setLoading]   = useState(true);
-  const { toasts, show }        = useToast();
-  const navigate                = useNavigate();
-
-  const showToast = show;
+  const [tickets, setTickets] = useState([]);
+  const [stats, setStats]     = useState(null);
+  const [total, setTotal]     = useState(0);
+  const [page, setPage]       = useState(1);
+  const [pages, setPages]     = useState(1);
+  const [view, setView]       = useState('assigned');
+  const [filters, setFilters] = useState({ status: '', urgency: '', department: '' });
+  const [loading, setLoading] = useState(true);
+  const { toasts, show }      = useToast();
+  const navigate              = useNavigate();
+  const pollRef               = useRef(null);
 
   const fetchStats = useCallback(async () => {
     try {
@@ -29,8 +27,8 @@ export default function AgentDashboard() {
     } catch {}
   }, []);
 
-  const fetchTickets = useCallback(async () => {
-    setLoading(true);
+  const fetchTickets = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true);
     try {
       const endpoint = view === 'all' ? '/tickets/all' : '/tickets/agent';
       const { data } = await API.get(endpoint, { params: { page, limit: 20, ...filters } });
@@ -38,40 +36,37 @@ export default function AgentDashboard() {
       setTotal(data.total);
       setPages(data.pages);
     } catch {
-      showToast('Failed to load tickets', 'error');
+      if (!silent) show('Failed to load tickets', 'error');
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, [view, page, filters]);
 
-  useEffect(() => { fetchTickets(); fetchStats(); }, [fetchTickets, fetchStats]);
-
+  // Initial load
   useEffect(() => {
-    const socket = io(SOCKET_URL, { transports: ['websocket', 'polling'] });
-    socket.on('ticket:new', (ticket) => {
-      setTickets((p) => [ticket, ...p]);
-      setTotal((t) => t + 1);
+    fetchTickets(false);
+    fetchStats();
+  }, [fetchTickets, fetchStats]);
+
+  // Polling
+  useEffect(() => {
+    pollRef.current = setInterval(() => {
+      fetchTickets(true);
       fetchStats();
-      showToast(`🆕 New ticket: ${ticket.ticketNumber}`, 'info');
-    });
-    socket.on('ticket:updated', ({ id, status }) => {
-      setTickets((p) => p.map((t) => t._id === id ? { ...t, status } : t));
-      fetchStats();
-    });
-    return () => socket.disconnect();
-  }, []);
+    }, POLL_INTERVAL);
+    return () => clearInterval(pollRef.current);
+  }, [fetchTickets, fetchStats]);
 
   const updateStatus = async (id, status) => {
     try {
       await API.patch(`/tickets/${id}/status`, { status });
       setTickets((p) => p.map((t) => t._id === id ? { ...t, status } : t));
       fetchStats();
-      showToast(`Status → ${status}`);
-    } catch { showToast('Update failed', 'error'); }
+      show(`Status → "${status}" ✓`);
+    } catch { show('Update failed', 'error'); }
   };
 
   const setFilter = (k, v) => { setFilters((f) => ({ ...f, [k]: v })); setPage(1); };
-
   const sorted = [...tickets].sort((a, b) => (URGENCY_ORD[a.urgency] ?? 9) - (URGENCY_ORD[b.urgency] ?? 9));
 
   return (
@@ -89,7 +84,7 @@ export default function AgentDashboard() {
           <div className="stat-card indigo">
             <div className="stat-icon">📋</div>
             <div className="stat-value">{stats.total}</div>
-            <div className="stat-label">Total Tickets</div>
+            <div className="stat-label">Total</div>
           </div>
           <div className="stat-card blue">
             <div className="stat-icon">🔓</div>
@@ -136,7 +131,7 @@ export default function AgentDashboard() {
         </div>
       )}
 
-      {/* Main table */}
+      {/* Main table card */}
       <div className="card">
         <div className="card-header">
           {/* View toggle */}
@@ -154,8 +149,9 @@ export default function AgentDashboard() {
               </button>
             ))}
           </div>
-          <div style={{ fontSize: '.84rem', color: 'var(--gray-400)' }}>
-            {total} ticket{total !== 1 ? 's' : ''}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <span style={{ fontSize: '.75rem', color: 'var(--gray-400)' }}>🔄 Auto-refreshes every 8s</span>
+            <span style={{ fontSize: '.84rem', color: 'var(--gray-400)' }}>{total} ticket{total !== 1 ? 's' : ''}</span>
           </div>
         </div>
 
@@ -164,24 +160,25 @@ export default function AgentDashboard() {
           <div className="filter-bar">
             <select value={filters.status} onChange={(e) => setFilter('status', e.target.value)}>
               <option value="">All Statuses</option>
-              {['open','in-progress','pending','resolved','closed'].map((s) => (
+              {['open', 'in-progress', 'pending', 'resolved', 'closed'].map((s) => (
                 <option key={s} value={s}>{s}</option>
               ))}
             </select>
             <select value={filters.urgency} onChange={(e) => setFilter('urgency', e.target.value)}>
               <option value="">All Urgencies</option>
-              {['critical','high','medium','low'].map((u) => (
+              {['critical', 'high', 'medium', 'low'].map((u) => (
                 <option key={u} value={u}>{u}</option>
               ))}
             </select>
             <select value={filters.department} onChange={(e) => setFilter('department', e.target.value)}>
               <option value="">All Departments</option>
-              {['billing','technical','general','sales'].map((d) => (
+              {['billing', 'technical', 'general', 'sales'].map((d) => (
                 <option key={d} value={d}>{d}</option>
               ))}
             </select>
             {(filters.status || filters.urgency || filters.department) && (
-              <button className="btn btn-ghost btn-sm" onClick={() => { setFilters({ status: '', urgency: '', department: '' }); setPage(1); }}>
+              <button className="btn btn-ghost btn-sm"
+                onClick={() => { setFilters({ status: '', urgency: '', department: '' }); setPage(1); }}>
                 × Clear
               </button>
             )}
@@ -214,11 +211,12 @@ export default function AgentDashboard() {
                 </thead>
                 <tbody>
                   {sorted.map((t) => {
-                    const slaExpired = t.slaDeadline && new Date(t.slaDeadline) < new Date() && !['resolved','closed'].includes(t.status);
+                    const slaExpired = t.slaDeadline && new Date(t.slaDeadline) < new Date()
+                      && !['resolved', 'closed'].includes(t.status);
                     return (
                       <tr key={t._id} className={slaExpired ? 'sla-row-alert' : ''}>
                         <td><span className="ticket-num">{t.ticketNumber}</span></td>
-                        <td style={{ maxWidth: 260 }}>
+                        <td style={{ maxWidth: 240 }}>
                           <span className="ticket-link" onClick={() => navigate(`/agent/tickets/${t._id}`)}>
                             {t.subject}
                           </span>
@@ -246,10 +244,10 @@ export default function AgentDashboard() {
                         </td>
                         <td>
                           <div style={{ display: 'flex', gap: 4 }}>
-                            {t.status !== 'in-progress' && !['resolved','closed'].includes(t.status) && (
+                            {t.status !== 'in-progress' && !['resolved', 'closed'].includes(t.status) && (
                               <button className="btn btn-xs btn-purple" onClick={() => updateStatus(t._id, 'in-progress')}>Start</button>
                             )}
-                            {!['resolved','closed'].includes(t.status) && (
+                            {!['resolved', 'closed'].includes(t.status) && (
                               <button className="btn btn-xs btn-success" onClick={() => updateStatus(t._id, 'resolved')}>Resolve</button>
                             )}
                             {t.status !== 'closed' && (

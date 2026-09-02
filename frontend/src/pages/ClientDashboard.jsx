@@ -1,23 +1,23 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import API from '../api/api';
-import { io } from 'socket.io-client';
 import Toast, { useToast } from '../components/Toast';
 
-const SOCKET_URL = 'http://localhost:5000';
+const POLL_INTERVAL = 10000; // refresh every 10 seconds
 
 export default function ClientDashboard() {
-  const [tickets, setTickets]   = useState([]);
-  const [total, setTotal]       = useState(0);
-  const [page, setPage]         = useState(1);
-  const [pages, setPages]       = useState(1);
-  const [filters, setFilters]   = useState({ status: '', urgency: '' });
-  const [loading, setLoading]   = useState(true);
-  const { toasts, show }        = useToast();
-  const navigate                = useNavigate();
+  const [tickets, setTickets] = useState([]);
+  const [total, setTotal]     = useState(0);
+  const [page, setPage]       = useState(1);
+  const [pages, setPages]     = useState(1);
+  const [filters, setFilters] = useState({ status: '', urgency: '' });
+  const [loading, setLoading] = useState(true);
+  const { toasts, show }      = useToast();
+  const navigate              = useNavigate();
+  const pollRef               = useRef(null);
 
-  const fetchTickets = useCallback(async () => {
-    setLoading(true);
+  const fetchTickets = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true);
     try {
       const params = { page, limit: 10, ...filters };
       const { data } = await API.get('/tickets/my', { params });
@@ -25,25 +25,24 @@ export default function ClientDashboard() {
       setTotal(data.total);
       setPages(data.pages);
     } catch {
-      show('Failed to load tickets', 'error');
+      if (!silent) show('Failed to load tickets', 'error');
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, [page, filters]);
 
-  useEffect(() => { fetchTickets(); }, [fetchTickets]);
-
+  // Initial load
   useEffect(() => {
-    const socket = io(SOCKET_URL, { transports: ['websocket', 'polling'] });
-    socket.on('ticket:updated', ({ id, status }) => {
-      setTickets((p) => p.map((t) => t._id === id ? { ...t, status } : t));
-      show('A ticket status was updated by your agent', 'info');
-    });
-    return () => socket.disconnect();
-  }, []);
+    fetchTickets(false);
+  }, [fetchTickets]);
 
-  const counts = tickets.reduce((a, t) => ({ ...a, [t.status]: (a[t.status] || 0) + 1 }), {});
+  // Polling — silently refresh every 10s
+  useEffect(() => {
+    pollRef.current = setInterval(() => fetchTickets(true), POLL_INTERVAL);
+    return () => clearInterval(pollRef.current);
+  }, [fetchTickets]);
 
+  const counts   = tickets.reduce((a, t) => ({ ...a, [t.status]: (a[t.status] || 0) + 1 }), {});
   const setFilter = (k, v) => { setFilters((f) => ({ ...f, [k]: v })); setPage(1); };
 
   return (
@@ -88,6 +87,9 @@ export default function ClientDashboard() {
       <div className="card">
         <div className="card-header">
           <div className="card-title">Ticket History</div>
+          <span style={{ fontSize: '.75rem', color: 'var(--gray-400)' }}>
+            🔄 Auto-refreshes every 10s
+          </span>
         </div>
 
         {/* Filters */}
@@ -95,13 +97,13 @@ export default function ClientDashboard() {
           <div className="filter-bar">
             <select value={filters.status} onChange={(e) => setFilter('status', e.target.value)}>
               <option value="">All Statuses</option>
-              {['open','in-progress','pending','resolved','closed'].map((s) => (
+              {['open', 'in-progress', 'pending', 'resolved', 'closed'].map((s) => (
                 <option key={s} value={s}>{s}</option>
               ))}
             </select>
             <select value={filters.urgency} onChange={(e) => setFilter('urgency', e.target.value)}>
               <option value="">All Urgencies</option>
-              {['critical','high','medium','low'].map((u) => (
+              {['critical', 'high', 'medium', 'low'].map((u) => (
                 <option key={u} value={u}>{u}</option>
               ))}
             </select>

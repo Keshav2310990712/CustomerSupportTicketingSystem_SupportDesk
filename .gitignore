@@ -5,6 +5,8 @@ frontend/node_modules/
 
 # Environment variables - NEVER commit secrets
 backend/.env
+frontend/.env
+frontend/.env.production
 
 # Build output
 frontend/dist/

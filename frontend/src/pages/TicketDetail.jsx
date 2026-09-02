@@ -2,17 +2,16 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import API from '../api/api';
 import { useAuth } from '../context/AuthContext';
-import { io } from 'socket.io-client';
 import Toast, { useToast } from '../components/Toast';
 
-const SOCKET_URL = 'http://localhost:5000';
+const POLL_INTERVAL = 5000; // poll conversation every 5s
 
 const STATUS_CONFIG = {
-  open:         { label: 'Open',        color: '#0284c7', dot: '#0284c7' },
-  'in-progress':{ label: 'In Progress', color: '#7c3aed', dot: '#7c3aed' },
-  pending:      { label: 'Pending',     color: '#d97706', dot: '#d97706' },
-  resolved:     { label: 'Resolved',    color: '#059669', dot: '#059669' },
-  closed:       { label: 'Closed',      color: '#9ca3af', dot: '#9ca3af' },
+  open:          { label: 'Open',        dot: '#0284c7' },
+  'in-progress': { label: 'In Progress', dot: '#7c3aed' },
+  pending:       { label: 'Pending',     dot: '#d97706' },
+  resolved:      { label: 'Resolved',    dot: '#059669' },
+  closed:        { label: 'Closed',      dot: '#9ca3af' },
 };
 
 function getInitials(name = '') {
@@ -20,28 +19,38 @@ function getInitials(name = '') {
 }
 
 export default function TicketDetail() {
-  const { id }          = useParams();
-  const { user }        = useAuth();
-  const navigate        = useNavigate();
+  const { id }           = useParams();
+  const { user }         = useAuth();
+  const navigate         = useNavigate();
   const { toasts, show } = useToast();
 
-  const [ticket, setTicket]     = useState(null);
-  const [agents, setAgents]     = useState([]);
-  const [reply, setReply]       = useState('');
+  const [ticket, setTicket]         = useState(null);
+  const [agents, setAgents]         = useState([]);
+  const [reply, setReply]           = useState('');
   const [replyFiles, setReplyFiles] = useState([]);
-  const [loading, setLoading]   = useState(true);
-  const [sending, setSending]   = useState(false);
-  const [error, setError]       = useState('');
-  const bottomRef = useRef(null);
+  const [loading, setLoading]       = useState(true);
+  const [sending, setSending]       = useState(false);
+  const [error, setError]           = useState('');
+  const bottomRef  = useRef(null);
+  const pollRef    = useRef(null);
+  const msgCount   = useRef(0);
 
-  const fetchTicket = useCallback(async () => {
+  const fetchTicket = useCallback(async (silent = false) => {
     try {
       const { data } = await API.get(`/tickets/${id}`);
-      setTicket(data);
+      // Only scroll to bottom when new messages arrive
+      const newCount = data.messages?.length || 0;
+      if (newCount > msgCount.current) {
+        msgCount.current = newCount;
+        setTicket(data);
+        setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
+      } else {
+        setTicket(data);
+      }
     } catch (err) {
-      setError(err.response?.data?.message || 'Failed to load ticket');
+      if (!silent) setError(err.response?.data?.message || 'Failed to load ticket');
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, [id]);
 
@@ -49,25 +58,17 @@ export default function TicketDetail() {
     try { const { data } = await API.get('/users/agents'); setAgents(data); } catch {}
   }, []);
 
+  // Initial load
   useEffect(() => {
-    fetchTicket();
+    fetchTicket(false);
     if (user?.role === 'agent') fetchAgents();
   }, [fetchTicket, fetchAgents, user]);
 
+  // Polling — refresh ticket every 5s to catch new replies
   useEffect(() => {
-    const socket = io(SOCKET_URL, { transports: ['websocket', 'polling'] });
-    socket.on('ticket:message', ({ ticketId }) => {
-      if (ticketId === id) fetchTicket();
-    });
-    socket.on('ticket:updated', ({ id: tid, status }) => {
-      if (tid === id) setTicket((p) => p ? { ...p, status } : p);
-    });
-    return () => socket.disconnect();
-  }, [id, fetchTicket]);
-
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [ticket?.messages?.length]);
+    pollRef.current = setInterval(() => fetchTicket(true), POLL_INTERVAL);
+    return () => clearInterval(pollRef.current);
+  }, [fetchTicket]);
 
   const sendReply = async (e) => {
     e.preventDefault();
@@ -77,20 +78,25 @@ export default function TicketDetail() {
       const fd = new FormData();
       fd.append('content', reply.trim());
       replyFiles.forEach((f) => fd.append('attachments', f));
-      await API.post(`/tickets/${id}/messages`, fd, { headers: { 'Content-Type': 'multipart/form-data' } });
-      setReply(''); setReplyFiles([]);
-      fetchTicket();
+      await API.post(`/tickets/${id}/messages`, fd, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+      setReply('');
+      setReplyFiles([]);
+      await fetchTicket(false);
       show('Reply sent ✓');
     } catch (err) {
       show(err.response?.data?.message || 'Failed to send reply', 'error');
-    } finally { setSending(false); }
+    } finally {
+      setSending(false);
+    }
   };
 
   const updateStatus = async (status) => {
     try {
       await API.patch(`/tickets/${id}/status`, { status });
       setTicket((p) => ({ ...p, status }));
-      show(`Status updated to "${status}" ✓`);
+      show(`Status → "${status}" ✓`);
     } catch { show('Update failed', 'error'); }
   };
 
@@ -118,15 +124,14 @@ export default function TicketDetail() {
 
   if (!ticket) return null;
 
-  const isClosed  = ['resolved', 'closed'].includes(ticket.status);
-  const backPath  = user?.role === 'agent' ? '/agent' : '/client';
+  const isClosed   = ['resolved', 'closed'].includes(ticket.status);
+  const backPath   = user?.role === 'agent' ? '/agent' : '/client';
   const slaExpired = ticket.slaDeadline && new Date(ticket.slaDeadline) < new Date() && !isClosed;
 
   return (
     <div className="page">
       <Toast toasts={toasts} />
 
-      {/* Back + breadcrumb */}
       <button className="btn btn-ghost btn-sm" style={{ marginBottom: 18 }} onClick={() => navigate(backPath)}>
         ← Back to {user?.role === 'agent' ? 'Dashboard' : 'My Tickets'}
       </button>
@@ -137,8 +142,7 @@ export default function TicketDetail() {
           <h1 style={{ fontSize: '1.25rem', fontWeight: 800, color: 'var(--gray-900)', flex: 1 }}>
             {ticket.subject}
           </h1>
-          <span className={`badge badge-${ticket.status}`}
-            style={{ fontSize: '.8rem', padding: '5px 12px' }}>
+          <span className={`badge badge-${ticket.status}`} style={{ fontSize: '.8rem', padding: '5px 12px' }}>
             <span style={{ width: 7, height: 7, borderRadius: '50%', background: STATUS_CONFIG[ticket.status]?.dot, display: 'inline-block' }} />
             {ticket.status}
           </span>
@@ -147,7 +151,6 @@ export default function TicketDetail() {
           </span>
         </div>
 
-        {/* Meta row */}
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, marginTop: 12, fontSize: '.82rem', color: 'var(--gray-500)' }}>
           <span>🎫 <strong style={{ color: 'var(--gray-700)' }}>{ticket.ticketNumber}</strong></span>
           <span>🏢 <strong style={{ color: 'var(--gray-700)', textTransform: 'capitalize' }}>{ticket.department}</strong></span>
@@ -172,10 +175,10 @@ export default function TicketDetail() {
       {/* Two-column layout */}
       <div className="ticket-detail-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 280px', gap: 20, alignItems: 'start' }}>
 
-        {/* Left: description + conversation */}
+        {/* Left column */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
 
-          {/* Original description */}
+          {/* Description */}
           <div className="card card-body">
             <div style={{ fontWeight: 700, fontSize: '.83rem', color: 'var(--gray-500)', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 12 }}>
               Original Description
@@ -188,9 +191,7 @@ export default function TicketDetail() {
                 <div style={{ fontSize: '.76rem', fontWeight: 600, color: 'var(--gray-400)', textTransform: 'uppercase', marginBottom: 8 }}>Attachments</div>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
                   {ticket.attachments.map((a, i) => (
-                    <a key={i}
-                      href={`/uploads/${a.path?.split(/[\\/]/).pop()}`}
-                      target="_blank" rel="noreferrer"
+                    <a key={i} href={`/uploads/${a.path?.split(/[\\/]/).pop()}`} target="_blank" rel="noreferrer"
                       style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'var(--primary-light)', color: 'var(--primary)', padding: '5px 12px', borderRadius: 7, fontSize: '.78rem', fontWeight: 500 }}>
                       📎 {a.filename}
                     </a>
@@ -202,8 +203,11 @@ export default function TicketDetail() {
 
           {/* Conversation */}
           <div className="card card-body">
-            <div style={{ fontWeight: 700, fontSize: '.83rem', color: 'var(--gray-500)', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 14 }}>
-              Conversation · {ticket.messages?.length || 0} messages
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+              <div style={{ fontWeight: 700, fontSize: '.83rem', color: 'var(--gray-500)', textTransform: 'uppercase', letterSpacing: '.06em' }}>
+                Conversation · {ticket.messages?.length || 0} messages
+              </div>
+              <span style={{ fontSize: '.72rem', color: 'var(--gray-400)' }}>🔄 Polls every 5s</span>
             </div>
 
             {(!ticket.messages || ticket.messages.length === 0) ? (
@@ -218,14 +222,15 @@ export default function TicketDetail() {
                       <div className="msg-avatar client">{getInitials(msg.sender?.name)}</div>
                     )}
                     <div className="msg-bubble">
-                      <div className="msg-sender">{msg.sender?.name} · {msg.senderRole}</div>
+                      <div className="msg-sender">
+                        {msg.sender?.name} · <span style={{ fontWeight: 400 }}>{msg.senderRole}</span>
+                      </div>
                       <div className="msg-text">{msg.content}</div>
                       {msg.attachments?.length > 0 && (
                         <div style={{ marginTop: 8 }}>
                           {msg.attachments.map((a, j) => (
                             <a key={j} href={`/uploads/${a.path?.split(/[\\/]/).pop()}`} target="_blank" rel="noreferrer"
-                              style={{ display: 'inline-flex', alignItems: 'center', gap: 4, marginRight: 8, fontSize: '.75rem',
-                                color: msg.senderRole === 'agent' ? 'rgba(255,255,255,.8)' : 'var(--primary)' }}>
+                              style={{ display: 'inline-flex', alignItems: 'center', gap: 4, marginRight: 8, fontSize: '.75rem', color: msg.senderRole === 'agent' ? 'rgba(255,255,255,.8)' : 'var(--primary)' }}>
                               📎 {a.filename}
                             </a>
                           ))}
@@ -250,14 +255,12 @@ export default function TicketDetail() {
                     <textarea
                       value={reply}
                       onChange={(e) => setReply(e.target.value)}
-                      placeholder="Type your reply… (Shift+Enter for new line)"
+                      placeholder="Type your reply… (Enter to send, Shift+Enter for new line)"
                       onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendReply(e); } }}
                     />
                     <div className="reply-actions">
-                      <label style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4,
-                        background: 'var(--gray-100)', border: '1px solid var(--gray-200)',
-                        borderRadius: 7, padding: '6px 10px', fontSize: '.78rem', color: 'var(--gray-600)' }}>
-                        📎 {replyFiles.length > 0 ? `${replyFiles.length}` : ''}
+                      <label style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4, background: 'var(--gray-100)', border: '1px solid var(--gray-200)', borderRadius: 7, padding: '6px 10px', fontSize: '.78rem', color: 'var(--gray-600)' }}>
+                        📎 {replyFiles.length > 0 ? replyFiles.length : ''}
                         <input type="file" multiple style={{ display: 'none' }}
                           onChange={(e) => setReplyFiles(Array.from(e.target.files))} />
                       </label>
@@ -291,7 +294,7 @@ export default function TicketDetail() {
                     onClick={() => updateStatus(s)} disabled={ticket.status === s}>
                     <span className="status-btn-dot" style={{ background: cfg.dot }} />
                     {cfg.label}
-                    {ticket.status === s && <span style={{ marginLeft: 'auto', fontSize: '.7rem' }}>✓ Current</span>}
+                    {ticket.status === s && <span style={{ marginLeft: 'auto', fontSize: '.7rem' }}>✓</span>}
                   </button>
                 ))}
               </div>
@@ -305,8 +308,7 @@ export default function TicketDetail() {
                     <option value="" disabled>Select agent…</option>
                     {agents.map((a) => (
                       <option key={a._id} value={a._id}>
-                        {a.name} ({a.department})
-                        {a._id === ticket.assignedAgent?._id ? ' ← current' : ''}
+                        {a.name} ({a.department}){a._id === ticket.assignedAgent?._id ? ' ✓' : ''}
                       </option>
                     ))}
                   </select>
@@ -334,7 +336,7 @@ export default function TicketDetail() {
                 <div><span className={`badge badge-${ticket.urgency}`}>{ticket.urgency}</span></div>
               </div>
               <div className="info-item">
-                <div className="info-item-label">Submitted</div>
+                <div className="info-item-label">Created</div>
                 <div className="info-item-value">{new Date(ticket.createdAt).toLocaleString()}</div>
               </div>
               {ticket.firstResponseAt && (
@@ -346,9 +348,7 @@ export default function TicketDetail() {
               {ticket.resolvedAt && (
                 <div className="info-item">
                   <div className="info-item-label">Resolved At</div>
-                  <div className="info-item-value" style={{ color: 'var(--success)' }}>
-                    {new Date(ticket.resolvedAt).toLocaleString()}
-                  </div>
+                  <div className="info-item-value" style={{ color: 'var(--success)' }}>{new Date(ticket.resolvedAt).toLocaleString()}</div>
                 </div>
               )}
               {ticket.slaDeadline && (
